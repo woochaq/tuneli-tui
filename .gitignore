@@ -1,0 +1,12 @@
+# Rust standard ignores
+/target
+/dist
+**/*.rs.bk
+
+# IDEs
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
