@@ -3,7 +3,7 @@ use ratatui::{
     Terminal,
 };
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    event,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
@@ -268,211 +268,9 @@ impl App {
 
             while event::poll(std::time::Duration::from_millis(0))? {
                 let ev = event::read()?;
-                if let Event::Key(key) = ev {
-                    if key.kind == KeyEventKind::Press {
-                        if self.show_add_config_modal {
-                            match key.code {
-                                KeyCode::Esc => self.show_add_config_modal = false,
-                                KeyCode::Tab => {
-                                    self.add_config_state.focused_field = (self.add_config_state.focused_field + 1) % 4;
-                                }
-                                KeyCode::BackTab => {
-                                    self.add_config_state.focused_field = (self.add_config_state.focused_field + 3) % 4;
-                                }
-                                KeyCode::Char(c) => match self.add_config_state.focused_field {
-                                    0 | 2 => self.add_config_state.insert_char(c),
-                                    1 => {
-                                         if c == ' ' || c == 'p' {
-                                             self.add_config_state.toggle_protocol();
-                                         }
-                                    }
-                                    _ => {}
-                                },
-                                KeyCode::Backspace => self.add_config_state.delete_back(),
-                                KeyCode::Enter => {
-                                    if self.add_config_state.focused_field == 3 {
-                                        self.save_new_config().await.ok();
-                                    } else if self.add_config_state.focused_field == 2 {
-                                         self.add_config_state.insert_char('\n');
-                                    }
-                                }
-                                KeyCode::Left => {
-                                    if self.add_config_state.focused_field == 1 {
-                                        self.add_config_state.toggle_protocol();
-                                    } else {
-                                        self.add_config_state.move_cursor(-1, 0);
-                                    }
-                                }
-                                KeyCode::Right => {
-                                    if self.add_config_state.focused_field == 1 {
-                                        self.add_config_state.toggle_protocol();
-                                    } else {
-                                        self.add_config_state.move_cursor(1, 0);
-                                    }
-                                }
-                                KeyCode::Up => self.add_config_state.move_cursor(0, -1),
-                                KeyCode::Down => self.add_config_state.move_cursor(0, 1),
-                                _ => {}
-                            }
-                            continue;
-                        }
-
-                        if self.show_delete_modal {
-                            match key.code {
-                                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
-                                    self.show_delete_modal = false;
-                                    self.profile_to_delete = None;
-                                }
-                                KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
-                                    if let Some(profile) = self.profile_to_delete.take() {
-                                        self.delete_profile(profile).await.ok();
-                                    }
-                                    self.show_delete_modal = false;
-                                }
-                                _ => {}
-                            }
-                            continue;
-                        }
-
-                        // Ctrl+C — always handled, even inside sudo prompt
-                        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                            if self.quit_pending {
-                                self.should_quit = true;
-                            } else {
-                                self.quit_pending = true;
-                                self.quit_pending_time = Some(std::time::Instant::now());
-                                self.status_message = Some("Press Ctrl+C again within 3s to exit…".to_string());
-                            }
-                            continue;
-                        }
-
-                        if self.sudo_prompt.is_active {
-                            match key.code {
-                                KeyCode::Char(c) => self.sudo_prompt.input.push(c),
-                                KeyCode::Backspace => { self.sudo_prompt.input.pop(); },
-                                KeyCode::Esc => self.sudo_prompt.is_active = false,
-                                KeyCode::Enter => {
-                                    if !self.sudo_prompt.input.is_empty() {
-                                        let pwd = self.sudo_prompt.input.clone();
-                                        self.sudo_prompt.is_verifying = true;
-                                        terminal.draw(|f| { crate::ui::layout::draw(f, self); }).ok();
-                                        if crate::engine::runner::SudoRunner::validate_password(&pwd).await {
-                                            crate::engine::runner::SudoRunner::set_password(pwd);
-                                            self.sudo_prompt.is_active = false;
-                                            self.sudo_prompt.error_msg = None;
-                                            self.refresh_profiles().await;
-                                        } else {
-                                            self.sudo_prompt.error_msg = Some("Incorrect sudo password. Try again.".to_string());
-                                            self.sudo_prompt.input.clear();
-                                        }
-                                        self.sudo_prompt.is_verifying = false;
-                                    } else {
-                                        self.sudo_prompt.is_active = false;
-                                    }
-                                }
-                                _ => {}
-                            }
-                        } else {
-                            match key.code {
-                                KeyCode::Esc => {
-                                    if self.show_help {
-                                        self.show_help = false;
-                                    } else if self.show_config_modal {
-                                        self.show_config_modal = false;
-                                    } else if self.show_add_config_modal {
-                                        self.show_add_config_modal = false;
-                                    } else if self.show_delete_modal {
-                                        self.show_delete_modal = false;
-                                    }
-                                }
-                                KeyCode::Tab => {
-                                    self.focused_panel = match self.focused_panel {
-                                        FocusedPanel::Profiles => FocusedPanel::Logs,
-                                        FocusedPanel::Logs => FocusedPanel::Profiles,
-                                    };
-                                }
-                                KeyCode::Char('?') => self.show_help = !self.show_help,
-                                KeyCode::Char('v') => {
-                                    if let Some(idx) = self.list_state.selected() {
-                                        if let Some(profile) = self.profiles.get(idx) {
-                                            self.config_path = Some(profile.path.clone());
-                                            self.show_config_modal = true;
-                                            // Ensure config is loaded
-                                            self.load_config_for_selected().await;
-                                        }
-                                    }
-                                }
-                                KeyCode::Char('y') => {
-                                    if self.show_config_modal {
-                                        self.copy_config_to_clipboard();
-                                    }
-                                }
-                                KeyCode::Char('s') => {
-                                    self.sudo_prompt.input.clear();
-                                    self.sudo_prompt.error_msg = None;
-                                    self.sudo_prompt.is_active = true;
-                                },
-                                KeyCode::Char('a') => {
-                                    self.show_add_config_modal = true;
-                                    self.add_config_state = AddConfigState::new();
-                                },
-                                KeyCode::Down | KeyCode::Char('j') => self.next_profile().await,
-                                KeyCode::Up | KeyCode::Char('k') => self.previous_profile().await,
-                                KeyCode::Char('c') | KeyCode::Enter => {
-                                    if let Some(selected) = self.list_state.selected() {
-                                        if let Some(profile) = self.profiles.get(selected).cloned() {
-                                            self.connect_profile(profile).await;
-                                        }
-                                    }
-                                }
-                                KeyCode::Char('d') => {
-                                    self.disconnect_active().await;
-                                }
-                                KeyCode::Delete | KeyCode::Char('x') => {
-                                    if let Some(idx) = self.list_state.selected() {
-                                        if let Some(profile) = self.profiles.get(idx) {
-                                            self.profile_to_delete = Some(profile.clone());
-                                            self.show_delete_modal = true;
-                                        }
-                                    }
-                                }
-                                KeyCode::Char('r') => {
-                                    self.reconnect_selected().await;
-                                }
-                                KeyCode::Char('i') => {
-                                    // Trigger IP refresh in background
-                                    self.last_geo_refresh = std::time::Instant::now() - std::time::Duration::from_secs(60);
-                                    self.status_message = Some("Refreshing public IP...".to_string());
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                } else if let Event::Mouse(mouse_event) = ev {
-                    match mouse_event.kind {
-                        event::MouseEventKind::ScrollDown => {
-                            if self.show_add_config_modal && self.add_config_state.focused_field == 2 {
-                                self.add_config_state.move_cursor(0, 1);
-                            } else if !self.show_add_config_modal && !self.show_config_modal && !self.show_help {
-                                if self.focused_panel == FocusedPanel::Profiles {
-                                    self.next_profile().await;
-                                }
-                            }
-                        }
-                        event::MouseEventKind::ScrollUp => {
-                            if self.show_add_config_modal && self.add_config_state.focused_field == 2 {
-                                self.add_config_state.move_cursor(0, -1);
-                            } else if !self.show_add_config_modal && !self.show_config_modal && !self.show_help {
-                                if self.focused_panel == FocusedPanel::Profiles {
-                                    self.previous_profile().await;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                } else if let Event::Paste(text) = ev {
-                    if self.show_add_config_modal {
-                        self.add_config_state.paste(&text);
+                if crate::ui::input::handle_event(self, ev).await {
+                    if self.sudo_prompt.is_verifying {
+                        terminal.draw(|f| { crate::ui::layout::draw(f, self); }).ok();
                     }
                 }
             }
@@ -493,7 +291,7 @@ impl App {
         Ok(())
     }
 
-    async fn connect_profile(&mut self, profile: VpnProfile) {
+    pub async fn connect_profile(&mut self, profile: VpnProfile) {
         let password = match crate::engine::runner::SudoRunner::get_password() {
             Some(p) => p,
             None => {

@@ -118,3 +118,66 @@ fn test_sudo_prompt_initialization() {
     assert_eq!(prompt.error_msg, None);
     assert_eq!(prompt.is_verifying, false);
 }
+
+#[test]
+fn test_add_config_state_paste_crlf() {
+    let mut state = AddConfigState::new();
+    state.focused_field = 2;
+    state.paste("line 1\r\nline 2\r\nline 3");
+    
+    assert_eq!(state.content.len(), 3);
+    assert_eq!(state.content[0], "line 1");
+    assert_eq!(state.content[1], "line 2");
+    assert_eq!(state.content[2], "line 3");
+}
+
+#[test]
+fn test_add_config_state_backspace_at_start() {
+    let mut state = AddConfigState::new();
+    state.focused_field = 2; // Content field
+    state.paste("test");
+    state.content_cursor = (0, 0); // Start of first line
+    
+    // Backspace at the very beginning should do nothing and not crash
+    state.delete_back();
+    assert_eq!(state.content.len(), 1);
+    assert_eq!(state.content[0], "test");
+    assert_eq!(state.content_cursor, (0, 0));
+}
+
+#[test]
+fn test_add_config_state_insert_newline() {
+    let mut state = AddConfigState::new();
+    state.focused_field = 2;
+    state.paste("hello");
+    state.content_cursor = (2, 0); // between 'e' and 'l'
+    
+    state.insert_char('\n');
+    assert_eq!(state.content.len(), 2);
+    assert_eq!(state.content[0], "he");
+    assert_eq!(state.content[1], "llo");
+    assert_eq!(state.content_cursor, (0, 1));
+}
+
+#[test]
+fn test_sudo_prompt_input_handling() {
+    let mut prompt = SudoPrompt::new();
+    prompt.is_active = true;
+    prompt.input = "mypass".to_string();
+    
+    // Test that we can pop
+    prompt.input.pop();
+    assert_eq!(prompt.input, "mypas");
+    
+    // Test that popping empty string is safe
+    prompt.input.clear();
+    prompt.input.pop(); // shouldn't panic
+    assert_eq!(prompt.input, "");
+}
+
+#[test]
+fn test_format_speed_edge_cases() {
+    assert_eq!(format_speed(0.0), "0.0 B/s");
+    assert_eq!(format_speed(-100.0), "-100.0 B/s"); // Technically possible if diff is negative though it shouldn't be
+    assert_eq!(format_speed(1073741824.0), "1024.0 MB/s"); // 1 GB/s is just represented as MB/s in our current logic
+}
