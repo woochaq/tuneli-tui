@@ -7,7 +7,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::ui::app::{App, FocusedPanel};
+use crate::ui::add_config::{FocusedPanel, ProtocolType};
+use crate::ui::app::App;
 
 pub fn draw(f: &mut Frame, _app: &mut App) {
     let chunks = Layout::default()
@@ -246,7 +247,7 @@ fn draw_throughput_widget(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(tx_chart, inner_layout[1]);
 }
 
-fn format_speed(speed_bps: f64) -> String {
+pub fn format_speed(speed_bps: f64) -> String {
     if speed_bps < 1024.0 {
         format!("{:.1} B/s", speed_bps)
     } else if speed_bps < 1024.0 * 1024.0 {
@@ -256,11 +257,13 @@ fn format_speed(speed_bps: f64) -> String {
     }
 }
 
+
+
 fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let footer_text = if app.quit_pending {
         " ⚠ Press Ctrl+C again to exit (will disconnect VPN) "
     } else {
-        " Tab: Cycle Focus  |  j/k: Nav  |  c: Connect  |  v: Config  |  y: Yank  |  a: Add  |  d: Disc  |  r: Recon  |  i: IP  |  ?: Help "
+        " Tab: Cycle Focus  |  j/k: Nav  |  c: Connect  |  v: Config  |  y: Yank  |  a: Add  |  x: Del  |  d: Disc  |  r: Recon  |  i: IP  |  ?: Help "
     };
     let footer_style = if app.quit_pending {
         Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD)
@@ -290,6 +293,7 @@ fn draw_help_overlay(f: &mut Frame) {
         Line::from("  v         View Configuration Path & Content"),
         Line::from("  y         Yank (Copy) config to clipboard"),
         Line::from("  a         Add New Configuration (Import)"),
+        Line::from("  x / Del   Delete selected profile"),
         Line::from("  i         Refresh public IP"),
         Line::from(""),
         Line::from(vec![Span::styled("  System", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
@@ -363,8 +367,8 @@ fn draw_add_config_modal(f: &mut Frame, app: &mut App) {
 
     // Protocol
     let proto_style = if app.add_config_state.focused_field == 1 { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::Gray) };
-    let wg_style = if app.add_config_state.protocol == crate::ui::app::ProtocolType::WireGuard { Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) };
-    let ov_style = if app.add_config_state.protocol == crate::ui::app::ProtocolType::OpenVpn { Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) };
+    let wg_style = if app.add_config_state.protocol == ProtocolType::WireGuard { Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) };
+    let ov_style = if app.add_config_state.protocol == ProtocolType::OpenVpn { Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::DarkGray) };
 
     let proto_line = Line::from(vec![
         Span::styled(" [ WireGuard ] ", wg_style),
