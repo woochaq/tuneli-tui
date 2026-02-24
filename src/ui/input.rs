@@ -150,6 +150,9 @@ pub async fn handle_event(app: &mut App, ev: Event) -> bool {
                 app.sudo_prompt.error_msg = None;
                 app.sudo_prompt.is_active = true;
             },
+            KeyCode::Char('U') => {
+                app.trigger_update();
+            },
             KeyCode::Char('a') => {
                 app.show_add_config_modal = true;
                 app.add_config_state = crate::ui::add_config::AddConfigState::new();

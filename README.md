@@ -17,6 +17,8 @@ A lightning-fast, terminal-based VPN manager (TUI) for Linux and macOS. Manage y
   - Automatically discovers profiles from system paths.
   - Built-in Configuration Viewer with clipboard support (Linux/macOS).
   - Add new configurations directly from the TUI.
+- **Auto-Updates**:
+  - Pulls updates directly from GitHub Releases (`U`).
 - **Safe & Secure**:
   - Sudo password caching (piped directly to `stdin`, never stored in plain text on disk).
   - Automatic disconnection on exit.
@@ -46,6 +48,7 @@ The app automatically scans the following directories for profiles:
 | `a` | Add new VPN configuration |
 | `i` | Refresh Public IP manually |
 | `s` | Set/Change Sudo password |
+| `U` | Auto-update to latest GitHub Release |
 | `?` | Toggle Help Menu |
 | `q` / `Esc` | Quit / Close Modal |
 | `Ctrl+C` | Force Exit (with cleanup) |
@@ -63,15 +66,28 @@ The app automatically scans the following directories for profiles:
 - `openvpn` (`brew install openvpn`)
 - `pf` (built-in, used for Kill Switch)
 
-## Installation
+## Installation & Updates
 
+**Direct Binary (Linux / macOS)**
+When deploying from the binaries downloaded from the Releases tab on GitHub, simply mark it as executable:
+```bash
+chmod +x tuneli-tui
+sudo mv tuneli-tui /usr/local/bin/
+```
+
+**Auto-Updater (`U`)**
+`tuneli-tui` contains an embedded updater. Simply press `U` on your keyboard while the application is running, and the app will query the GitHub repository for a new release tag. If one exists, the binary will seamlessly download, unpack, and replace its executable directly.
+
+> **Note**: If installed to `/usr/local/bin`, you will need to open `tuneli-tui` via `sudo tuneli-tui` in order for it to overwrite itself during the update.
+
+**Building from Source**
 ```bash
 # Clone the repository
-git clone https://github.com/youruser/tuneli-tui.git
+git clone https://github.com/woochaq/tuneli-tui.git
 cd tuneli-tui
 
 # Build and run
-cargo run --release
+cargo install --path .
 ```
 
 ## Security Note

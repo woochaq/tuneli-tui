@@ -263,7 +263,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let footer_text = if app.quit_pending {
         " ⚠ Press Ctrl+C again to exit (will disconnect VPN) "
     } else {
-        " Tab: Cycle Focus  |  j/k: Nav  |  c: Connect  |  v: Config  |  y: Yank  |  a: Add  |  x: Del  |  d: Disc  |  r: Recon  |  i: IP  |  ?: Help "
+        " Tab: Cycle Focus  |  j/k: Nav  |  c: Connect  |  v: Config  |  y: Yank  |  a: Add  |  x: Del  |  d: Disc  |  r: Recon  |  i: IP  |  U: Update |  ?: Help "
     };
     let footer_style = if app.quit_pending {
         Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD)
@@ -297,8 +297,9 @@ fn draw_help_overlay(f: &mut Frame) {
         Line::from("  i         Refresh public IP"),
         Line::from(""),
         Line::from(vec![Span::styled("  System", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
-        Line::from("  s            Enter sudo password"),
-        Line::from("  ?            Toggle this help"),
+        Line::from("  s         Enter sudo password"),
+        Line::from("  U         Auto-update to latest release"),
+        Line::from("  ?         Toggle this help"),
         Line::from("  Ctrl+C ×2   Disconnect VPN and exit"),
         Line::from("  Esc          Close help / Modals"),
     ];

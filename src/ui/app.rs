@@ -58,6 +58,7 @@ pub struct App {
     pub ping: Option<std::time::Duration>,
     pub last_ping_refresh: std::time::Instant,
     pub ping_fetch_handle: Option<tokio::task::JoinHandle<Option<std::time::Duration>>>,
+    pub update_task: Option<tokio::task::JoinHandle<anyhow::Result<String>>>,
 }
 
 impl App {
@@ -93,6 +94,7 @@ impl App {
             ping: None,
             last_ping_refresh: std::time::Instant::now() - std::time::Duration::from_secs(60),
             ping_fetch_handle: None,
+            update_task: None,
         };
 
         if root {
@@ -246,6 +248,24 @@ impl App {
             if self.ping_fetch_handle.is_none() && self.last_ping_refresh.elapsed().as_secs() >= 5 {
                 self.last_ping_refresh = std::time::Instant::now();
                 self.ping_fetch_handle = Some(tokio::spawn(crate::telemetry::ping::measure_latency("1.1.1.1")));
+            }
+
+            // Polling Update Background Task
+            if let Some(handle) = self.update_task.take_if(|h| h.is_finished()) {
+                match handle.await {
+                    Ok(Ok(msg)) => {
+                        self.status_message = Some(msg.clone());
+                        self.log_lines.push(format!("[tuneli-tui] {}", msg));
+                    }
+                    Ok(Err(e)) => {
+                        self.status_message = Some("Update failed. See logs.".into());
+                        self.log_lines.push(format!("[ERROR] Update failed: {}", e));
+                    }
+                    Err(e) => {
+                        self.status_message = Some("Update thread panicked.".into());
+                        self.log_lines.push(format!("[ERROR] Update thread panic: {}", e));
+                    }
+                }
             }
 
             // Network throughput monitoring
@@ -609,5 +629,17 @@ impl App {
             }
         }
         false
+    }
+
+    pub fn trigger_update(&mut self) {
+        if self.update_task.is_none() {
+            self.status_message = Some("Checking for updates...".to_string());
+            self.log_lines.push("[tuneli-tui] Launching update fetch task...".to_string());
+            self.update_task = Some(tokio::task::spawn_blocking(|| {
+                crate::engine::updater::update_binary()
+            }));
+        } else {
+            self.status_message = Some("Update already in progress...".to_string());
+        }
     }
 }
