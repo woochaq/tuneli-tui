@@ -66,15 +66,34 @@ The app automatically scans the following directories for profiles:
 - `openvpn` (`brew install openvpn`)
 - `pf` (built-in, used for Kill Switch)
 
-## Installation
+## Installation & Updates
 
+**Quick Install Script (Linux / macOS)**
+The easiest way to install the latest binary release is via the provided `install.sh` script:
+```bash
+curl -fsSL https://raw.githubusercontent.com/woochaq/tuneli-tui/main/install.sh | bash
+```
+
+**Manual Binary Installation**
+Download the latest binary from the Releases tab on GitHub and mark it as executable:
+```bash
+chmod +x tuneli-tui
+sudo mv tuneli-tui /usr/local/bin/
+```
+
+**Auto-Updater (`U`)**
+`tuneli-tui` contains an embedded updater. Simply press `U` on your keyboard while the application is running, and the app will query the GitHub repository for a new release tag. If one exists, the binary will seamlessly download, unpack, and replace its executable directly.
+
+> **Note**: If installed to `/usr/local/bin`, you will need to open `tuneli-tui` via `sudo tuneli-tui` in order for it to overwrite itself during the update.
+
+**Building from Source**
 ```bash
 # Clone the repository
-git clone https://github.com/youruser/tuneli-tui.git
+git clone https://github.com/woochaq/tuneli-tui.git
 cd tuneli-tui
 
 # Build and run
-cargo run --release
+cargo install --path .
 ```
 
 ## Security Note
