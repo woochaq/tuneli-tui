@@ -78,13 +78,14 @@ curl -fsSL https://raw.githubusercontent.com/woochaq/tuneli-tui/main/install.sh 
 Download the latest binary from the Releases tab on GitHub and mark it as executable:
 ```bash
 chmod +x tuneli-tui
-sudo mv tuneli-tui /usr/local/bin/
+mkdir -p ~/.local/bin
+mv tuneli-tui ~/.local/bin/
 ```
 
 **Auto-Updater (`U`)**
 `tuneli-tui` contains an embedded updater. Simply press `U` on your keyboard while the application is running, and the app will query the GitHub repository for a new release tag. If one exists, the binary will seamlessly download, unpack, and replace its executable directly.
 
-> **Note**: If installed to `/usr/local/bin`, you will need to open `tuneli-tui` via `sudo tuneli-tui` in order for it to overwrite itself during the update.
+> **Note**: To use the auto-updater seamlessly, ensure the application is installed in a directory owned by your user, such as `~/.local/bin` (the default for `install.sh`).
 
 **Building from Source**
 ```bash

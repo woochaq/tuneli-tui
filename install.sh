@@ -55,15 +55,14 @@ fi
 
 chmod +x "$EXTRACTED_BIN"
 
-INSTALL_PATH="/usr/local/bin/$BIN_NAME"
+INSTALL_DIR="$HOME/.local/bin"
+INSTALL_PATH="$INSTALL_DIR/$BIN_NAME"
+
 echo "Installing to $INSTALL_PATH..."
-if [ -w "/usr/local/bin" ]; then
-    mv "$EXTRACTED_BIN" "$INSTALL_PATH"
-else
-    echo "Sudo privileges required to install to /usr/local/bin."
-    sudo mv "$EXTRACTED_BIN" "$INSTALL_PATH"
-fi
+mkdir -p "$INSTALL_DIR"
+mv "$EXTRACTED_BIN" "$INSTALL_PATH"
 
 rm -rf "$TMP_DIR"
 echo "✅ Successfully installed $BIN_NAME to $INSTALL_PATH"
+echo "Make sure $INSTALL_DIR is in your PATH."
 echo "Run '$BIN_NAME' to get started!"
