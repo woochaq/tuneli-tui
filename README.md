@@ -106,14 +106,14 @@ To create and publish a new version of `tuneli-tui`:
 
 1. Update the `version` field in `Cargo.toml`.
 2. Commit your changes.
-3. Create a new tag matching the `v*` format (e.g., `v1.0.0`).
+3. Create a new tag matching the `v*` format (e.g., `v0.1.0` or `v1.0.0`).
 4. Push the tag to GitHub.
 
 ```bash
 git add Cargo.toml
-git commit -m "chore: bump version to v1.0.0"
-git tag v1.0.0
-git push origin v1.0.0
+git commit -m "chore: bump version to v0.1.1"
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 The embedded **GitHub Actions Workflow** will automatically intercept the tag, compile the optimized binaries for Linux (`x86_64`) and macOS (`aarch64`), compress them into `.tar.gz` payloads, and publish them directly to the GitHub Releases page. This allows the built-in auto-updater and `install.sh` scripts to instantly distribute the new version.
