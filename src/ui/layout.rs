@@ -2,7 +2,8 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style, Modifier},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Sparkline, Clear},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Clear, Chart, Dataset, GraphType, Axis},
+    symbols,
     Frame,
 };
 
@@ -39,6 +40,10 @@ pub fn draw(f: &mut Frame, _app: &mut App) {
         draw_add_config_modal(f, _app);
     }
 
+    if _app.show_delete_modal {
+        draw_delete_modal(f, _app);
+    }
+
     _app.sudo_prompt.draw(f, f.area());
 }
 
@@ -50,8 +55,13 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let geo_span = if let Some(ref geo) = app.geo_info {
+        let ping_text = if let Some(p) = app.ping {
+            format!(" [Ping: {}ms] ", p.as_millis())
+        } else {
+            " [Ping: ---] ".to_string()
+        };
         Span::styled(
-            format!(" {}  ", geo.public_ip),
+            format!(" {} {} ", geo.public_ip, ping_text),
             Style::default().fg(Color::LightCyan),
         )
     } else {
@@ -143,8 +153,23 @@ fn draw_main_body(f: &mut Frame, app: &mut App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(logs_border_style);
     
-    let log_content = app.log_lines.join("\n");
-    let log_text = Paragraph::new(log_content).block(log_area);
+    let mut iter_lines: Vec<Line> = Vec::new();
+    for msg in &app.log_lines {
+        let span = if msg.starts_with("[ERROR]") {
+            Span::styled(msg, Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+        } else if msg.starts_with("[cmd]") {
+            Span::styled(msg, Style::default().fg(Color::DarkGray))
+        } else if msg.starts_with("[geo]") || msg.starts_with("[ping]") {
+            Span::styled(msg, Style::default().fg(Color::Blue))
+        } else if msg.starts_with("[tuneli-tui]") {
+            Span::styled(msg, Style::default().fg(Color::Green))
+        } else {
+            Span::raw(msg)
+        };
+        iter_lines.push(Line::from(vec![span]));
+    }
+
+    let log_text = Paragraph::new(iter_lines).block(log_area);
     f.render_widget(log_text, right_chunks[1]);
 }
 
@@ -154,24 +179,71 @@ fn draw_throughput_widget(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
         .split(area);
 
-    let rx_data: Vec<u64> = app.throughput_history.iter().map(|(rx, _)| *rx as u64).collect();
-    let tx_data: Vec<u64> = app.throughput_history.iter().map(|(_, tx)| *tx as u64).collect();
+    let mut rx_points = vec![];
+    let mut tx_points = vec![];
+    let mut max_rx = 1000.0; // minimum scale 1KB/s
+    let mut max_tx = 1000.0;
+
+    for (i, (rx, tx)) in app.throughput_history.iter().enumerate() {
+        let x = i as f64;
+        rx_points.push((x, *rx));
+        tx_points.push((x, *tx));
+        if *rx > max_rx { max_rx = *rx; }
+        if *tx > max_tx { max_tx = *tx; }
+    }
 
     let rx_last = app.throughput_history.back().map(|(rx, _)| *rx).unwrap_or(0.0);
     let tx_last = app.throughput_history.back().map(|(_, tx)| *tx).unwrap_or(0.0);
 
-    let rx_spark = Sparkline::default()
-        .block(Block::default().title(format!(" Download: {} ", format_speed(rx_last))).borders(Borders::LEFT | Borders::RIGHT | Borders::TOP))
-        .data(&rx_data)
-        .style(Style::default().fg(Color::LightBlue));
-    
-    let tx_spark = Sparkline::default()
-        .block(Block::default().title(format!(" Upload:   {} ", format_speed(tx_last))).borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM))
-        .data(&tx_data)
-        .style(Style::default().fg(Color::LightYellow));
+    let rx_dataset = vec![Dataset::default()
+        .marker(symbols::Marker::Braille)
+        .style(Style::default().fg(Color::LightBlue))
+        .graph_type(GraphType::Line)
+        .data(&rx_points)];
 
-    f.render_widget(rx_spark, inner_layout[0]);
-    f.render_widget(tx_spark, inner_layout[1]);
+    let tx_dataset = vec![Dataset::default()
+        .marker(symbols::Marker::Braille)
+        .style(Style::default().fg(Color::LightYellow))
+        .graph_type(GraphType::Line)
+        .data(&tx_points)];
+
+    let max_rx_str = format_speed(max_rx);
+    let max_tx_str = format_speed(max_tx);
+    let rx_width = max_rx_str.len();
+    let tx_width = max_tx_str.len();
+    
+    // To keep bounds properly aligned on the edge of the box without trailing lines:
+    let min_rx_str = format!("{:>width$}", "0.0 B/s", width = rx_width);
+    let min_tx_str = format!("{:>width$}", "0.0 B/s", width = tx_width);
+
+    let rx_chart = Chart::new(rx_dataset)
+        .block(Block::default()
+            .title(format!(" Download: {} ", format_speed(rx_last)))
+            .borders(Borders::LEFT | Borders::RIGHT | Borders::TOP))
+        .x_axis(Axis::default().bounds([0.0, 100.0]))
+        .y_axis(Axis::default()
+            .bounds([0.0, max_rx * 1.1])
+            .labels(vec![
+                Span::raw(min_rx_str),
+                Span::raw(""),
+                Span::styled(max_rx_str, Style::default().add_modifier(Modifier::BOLD)),
+            ]));
+
+    let tx_chart = Chart::new(tx_dataset)
+        .block(Block::default()
+            .title(format!(" Upload:   {} ", format_speed(tx_last)))
+            .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM))
+        .x_axis(Axis::default().bounds([0.0, 100.0]))
+        .y_axis(Axis::default()
+            .bounds([0.0, max_tx * 1.1])
+            .labels(vec![
+                Span::raw(min_tx_str),
+                Span::raw(""),
+                Span::styled(max_tx_str, Style::default().add_modifier(Modifier::BOLD)),
+            ]));
+
+    f.render_widget(rx_chart, inner_layout[0]);
+    f.render_widget(tx_chart, inner_layout[1]);
 }
 
 fn format_speed(speed_bps: f64) -> String {
@@ -252,7 +324,7 @@ fn draw_config_modal(f: &mut Frame, app: &App) {
     f.render_widget(para, area);
 }
 
-fn draw_add_config_modal(f: &mut Frame, app: &App) {
+fn draw_add_config_modal(f: &mut Frame, app: &mut App) {
     let area = centered_rect(80, 80, f.area());
     f.render_widget(Clear, area);
 
@@ -280,6 +352,14 @@ fn draw_add_config_modal(f: &mut Frame, app: &App) {
     let name_input = Paragraph::new(app.add_config_state.name.as_str())
         .block(Block::default().title(" Profile Name ").borders(Borders::ALL).border_style(name_style));
     f.render_widget(name_input, chunks[0]);
+    if app.add_config_state.focused_field == 0 {
+        let name_inner = chunks[0].inner(ratatui::layout::Margin { vertical: 1, horizontal: 1 });
+        let nx = app.add_config_state.name_cursor as u16;
+        f.set_cursor_position(ratatui::layout::Position {
+            x: name_inner.x + std::cmp::min(nx, name_inner.width.saturating_sub(1)),
+            y: name_inner.y,
+        });
+    }
 
     // Protocol
     let proto_style = if app.add_config_state.focused_field == 1 { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::Gray) };
@@ -298,8 +378,38 @@ fn draw_add_config_modal(f: &mut Frame, app: &App) {
 
     // Content
     let content_style = if app.add_config_state.focused_field == 2 { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::Gray) };
-    let content_input = Paragraph::new(app.add_config_state.content.as_str())
-        .block(Block::default().title(" Configuration Content (Paste here) ").borders(Borders::ALL).border_style(content_style));
+
+    let content_inner = chunks[2].inner(ratatui::layout::Margin { vertical: 1, horizontal: 1 });
+    if app.add_config_state.focused_field == 2 {
+        let cx = app.add_config_state.content_cursor.0 as u16;
+        let cy = app.add_config_state.content_cursor.1 as u16;
+
+        let mut scroll_v = app.add_config_state.content_scroll.0;
+        let mut scroll_h = app.add_config_state.content_scroll.1;
+
+        if cy < scroll_v {
+            scroll_v = cy;
+        } else if cy >= scroll_v + content_inner.height {
+            scroll_v = cy.saturating_sub(content_inner.height).saturating_add(1);
+        }
+
+        if cx < scroll_h {
+            scroll_h = cx;
+        } else if cx >= scroll_h + content_inner.width {
+            scroll_h = cx.saturating_sub(content_inner.width).saturating_add(1);
+        }
+
+        app.add_config_state.content_scroll = (scroll_v, scroll_h);
+        
+        f.set_cursor_position(ratatui::layout::Position {
+            x: content_inner.x + cx.saturating_sub(scroll_h),
+            y: content_inner.y + cy.saturating_sub(scroll_v),
+        });
+    }
+
+    let content_input = Paragraph::new(app.add_config_state.get_content_string())
+        .block(Block::default().title(" Configuration Content (Paste here) ").borders(Borders::ALL).border_style(content_style))
+        .scroll((app.add_config_state.content_scroll.0, app.add_config_state.content_scroll.1));
     f.render_widget(content_input, chunks[2]);
 
     // Save Button
@@ -338,4 +448,33 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             .as_ref(),
         )
         .split(popup_layout[1])[1]
+}
+
+fn draw_delete_modal(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 20, f.area());
+    f.render_widget(Clear, area);
+
+    let profile_name = app.profile_to_delete.as_ref().map(|p| p.name.as_str()).unwrap_or("Unknown");
+    
+    let modal_block = Block::default()
+        .title(" Confirm Deletion ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
+
+    let text = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" Are you sure you want to delete "),
+            Span::styled(profile_name, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::raw("?"),
+        ]),
+        Line::from(""),
+        Line::from(" [Y/Enter] Confirm  |  [N/Esc] Cancel "),
+    ];
+
+    let para = Paragraph::new(text)
+        .alignment(ratatui::layout::Alignment::Center)
+        .block(modal_block);
+
+    f.render_widget(para, area);
 }

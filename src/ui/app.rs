@@ -26,8 +26,11 @@ pub enum ProtocolType {
 
 pub struct AddConfigState {
     pub name: String,
+    pub name_cursor: usize,
     pub protocol: ProtocolType,
-    pub content: String,
+    pub content: Vec<String>,
+    pub content_cursor: (usize, usize), // (col, row)
+    pub content_scroll: (u16, u16),     // (vertical, horizontal)
     pub focused_field: usize, // 0: Name, 1: Protocol, 2: Content, 3: Save
 }
 
@@ -35,10 +38,128 @@ impl AddConfigState {
     pub fn new() -> Self {
         Self {
             name: String::new(),
+            name_cursor: 0,
             protocol: ProtocolType::WireGuard,
-            content: String::new(),
+            content: vec![String::new()],
+            content_cursor: (0, 0),
+            content_scroll: (0, 0),
             focused_field: 0,
         }
+    }
+
+    pub fn insert_char(&mut self, c: char) {
+        if self.focused_field == 0 {
+            let max_len = match self.protocol {
+                ProtocolType::WireGuard => 15,
+                ProtocolType::OpenVpn => 50,
+            };
+            if self.name.chars().count() < max_len {
+                let idx = self.name.char_indices().nth(self.name_cursor).map(|(i, _)| i).unwrap_or(self.name.len());
+                self.name.insert(idx, c);
+                self.name_cursor += 1;
+            }
+        } else if self.focused_field == 2 {
+            if c == '\n' {
+                let row = self.content_cursor.1;
+                let col = self.content_cursor.0;
+                let line = &mut self.content[row];
+                let idx = line.char_indices().nth(col).map(|(i, _)| i).unwrap_or(line.len());
+                let remainder = line.split_off(idx);
+                self.content.insert(row + 1, remainder);
+                self.content_cursor.1 += 1;
+                self.content_cursor.0 = 0;
+            } else {
+                let row = self.content_cursor.1;
+                let col = self.content_cursor.0;
+                let line = &mut self.content[row];
+                let idx = line.char_indices().nth(col).map(|(i, _)| i).unwrap_or(line.len());
+                line.insert(idx, c);
+                self.content_cursor.0 += 1;
+            }
+        }
+    }
+
+    pub fn delete_back(&mut self) {
+        if self.focused_field == 0 {
+            if self.name_cursor > 0 {
+                self.name_cursor -= 1;
+                let idx = self.name.char_indices().nth(self.name_cursor).map(|(i, _)| i).unwrap_or(self.name.len());
+                self.name.remove(idx);
+            }
+        } else if self.focused_field == 2 {
+            let row = self.content_cursor.1;
+            let col = self.content_cursor.0;
+            if col > 0 {
+                self.content_cursor.0 -= 1;
+                let line = &mut self.content[row];
+                let idx = line.char_indices().nth(self.content_cursor.0).map(|(i, _)| i).unwrap_or(line.len());
+                line.remove(idx);
+            } else if row > 0 {
+                let current_line = self.content.remove(row);
+                self.content_cursor.1 -= 1;
+                self.content_cursor.0 = self.content[row - 1].chars().count();
+                self.content[row - 1].push_str(&current_line);
+            }
+        }
+    }
+
+    pub fn paste(&mut self, text: &str) {
+        for c in text.chars() {
+            if c != '\r' {
+                self.insert_char(c);
+            }
+        }
+    }
+
+    pub fn move_cursor(&mut self, dx: isize, dy: isize) {
+        if self.focused_field == 0 {
+            if dx < 0 && self.name_cursor > 0 { self.name_cursor -= 1; }
+            if dx > 0 && self.name_cursor < self.name.chars().count() { self.name_cursor += 1; }
+        } else if self.focused_field == 2 {
+            let mut row = self.content_cursor.1 as isize + dy;
+            if row < 0 { row = 0; }
+            if row >= self.content.len() as isize { row = self.content.len() as isize - 1; }
+            self.content_cursor.1 = row as usize;
+            
+            let line_len = self.content[self.content_cursor.1].chars().count() as isize;
+            self.content_cursor.0 = std::cmp::min(self.content_cursor.0, line_len as usize);
+            
+            let col = self.content_cursor.0 as isize + dx;
+            if col < 0 {
+                if dx < 0 && self.content_cursor.1 > 0 {
+                    self.content_cursor.1 -= 1;
+                    self.content_cursor.0 = self.content[self.content_cursor.1].chars().count();
+                } else {
+                    self.content_cursor.0 = 0;
+                }
+            } else if col > line_len {
+                if dx > 0 && self.content_cursor.1 < self.content.len() - 1 {
+                    self.content_cursor.1 += 1;
+                    self.content_cursor.0 = 0;
+                } else {
+                    self.content_cursor.0 = line_len as usize;
+                }
+            } else {
+                self.content_cursor.0 = col as usize;
+            }
+        }
+    }
+
+    pub fn get_content_string(&self) -> String {
+        self.content.join("\n")
+    }
+
+    pub fn toggle_protocol(&mut self) {
+        self.protocol = match self.protocol {
+            ProtocolType::WireGuard => ProtocolType::OpenVpn,
+            ProtocolType::OpenVpn => {
+                if self.name.chars().count() > 15 {
+                    self.name = self.name.chars().take(15).collect();
+                    self.name_cursor = std::cmp::min(self.name_cursor, 15);
+                }
+                ProtocolType::WireGuard
+            },
+        };
     }
 }
 
@@ -78,6 +199,13 @@ pub struct App {
     pub clipboard: Option<arboard::Clipboard>,
     pub show_add_config_modal: bool,
     pub add_config_state: AddConfigState,
+    
+    // New fields for Phase 7 (UX/Features)
+    pub show_delete_modal: bool,
+    pub profile_to_delete: Option<VpnProfile>,
+    pub ping: Option<std::time::Duration>,
+    pub last_ping_refresh: std::time::Instant,
+    pub ping_fetch_handle: Option<tokio::task::JoinHandle<Option<std::time::Duration>>>,
 }
 
 impl App {
@@ -108,6 +236,11 @@ impl App {
             clipboard: arboard::Clipboard::new().ok(),
             show_add_config_modal: false,
             add_config_state: AddConfigState::new(),
+            show_delete_modal: false,
+            profile_to_delete: None,
+            ping: None,
+            last_ping_refresh: std::time::Instant::now() - std::time::Duration::from_secs(60),
+            ping_fetch_handle: None,
         };
 
         if root {
@@ -217,6 +350,7 @@ impl App {
         stdout().execute(EnterAlternateScreen)?;
         stdout().execute(crossterm::event::EnableBracketedPaste)?;
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+        stdout().execute(crossterm::event::EnableMouseCapture)?;
 
         while !self.should_quit {
             // Expire "Press Ctrl+C again to exit" after 3 seconds
@@ -248,6 +382,20 @@ impl App {
                 self.geo_fetch_handle = Some(tokio::spawn(crate::telemetry::geo::fetch_geo_info()));
             }
 
+            // Continuous Ping background task (every 5 seconds)
+            if let Some(handle) = self.ping_fetch_handle.take_if(|h| h.is_finished()) {
+                if let Ok(ping_result) = handle.await {
+                    self.ping = ping_result;
+                    if let Some(p) = ping_result {
+                        self.log_lines.push(format!("[ping] Latency to 1.1.1.1 is {}ms", p.as_millis()));
+                    }
+                }
+            }
+            if self.ping_fetch_handle.is_none() && self.last_ping_refresh.elapsed().as_secs() >= 5 {
+                self.last_ping_refresh = std::time::Instant::now();
+                self.ping_fetch_handle = Some(tokio::spawn(crate::telemetry::ping::measure_latency("1.1.1.1")));
+            }
+
             // Network throughput monitoring
             if self.last_throughput_update.elapsed().as_millis() >= 1000 {
                 let current_stats = crate::telemetry::network::get_net_stats();
@@ -267,7 +415,8 @@ impl App {
             })?;
 
             while event::poll(std::time::Duration::from_millis(0))? {
-                if let Event::Key(key) = event::read()? {
+                let ev = event::read()?;
+                if let Event::Key(key) = ev {
                     if key.kind == KeyEventKind::Press {
                         if self.show_add_config_modal {
                             match key.code {
@@ -275,36 +424,58 @@ impl App {
                                 KeyCode::Tab => {
                                     self.add_config_state.focused_field = (self.add_config_state.focused_field + 1) % 4;
                                 }
+                                KeyCode::BackTab => {
+                                    self.add_config_state.focused_field = (self.add_config_state.focused_field + 3) % 4;
+                                }
                                 KeyCode::Char(c) => match self.add_config_state.focused_field {
-                                    0 => self.add_config_state.name.push(c),
-                                    2 => self.add_config_state.content.push(c),
+                                    0 | 2 => self.add_config_state.insert_char(c),
                                     1 => {
                                          if c == ' ' || c == 'p' {
-                                             self.add_config_state.protocol = match self.add_config_state.protocol {
-                                                 ProtocolType::WireGuard => ProtocolType::OpenVpn,
-                                                 ProtocolType::OpenVpn => ProtocolType::WireGuard,
-                                             };
+                                             self.add_config_state.toggle_protocol();
                                          }
                                     }
                                     _ => {}
                                 },
-                                KeyCode::Backspace => match self.add_config_state.focused_field {
-                                    0 => { self.add_config_state.name.pop(); }
-                                    2 => { self.add_config_state.content.pop(); }
-                                    _ => {}
-                                },
+                                KeyCode::Backspace => self.add_config_state.delete_back(),
                                 KeyCode::Enter => {
                                     if self.add_config_state.focused_field == 3 {
                                         self.save_new_config().await.ok();
                                     } else if self.add_config_state.focused_field == 2 {
-                                         self.add_config_state.content.push('\n');
+                                         self.add_config_state.insert_char('\n');
                                     }
                                 }
-                                KeyCode::Left | KeyCode::Right if self.add_config_state.focused_field == 1 => {
-                                    self.add_config_state.protocol = match self.add_config_state.protocol {
-                                        ProtocolType::WireGuard => ProtocolType::OpenVpn,
-                                        ProtocolType::OpenVpn => ProtocolType::WireGuard,
-                                    };
+                                KeyCode::Left => {
+                                    if self.add_config_state.focused_field == 1 {
+                                        self.add_config_state.toggle_protocol();
+                                    } else {
+                                        self.add_config_state.move_cursor(-1, 0);
+                                    }
+                                }
+                                KeyCode::Right => {
+                                    if self.add_config_state.focused_field == 1 {
+                                        self.add_config_state.toggle_protocol();
+                                    } else {
+                                        self.add_config_state.move_cursor(1, 0);
+                                    }
+                                }
+                                KeyCode::Up => self.add_config_state.move_cursor(0, -1),
+                                KeyCode::Down => self.add_config_state.move_cursor(0, 1),
+                                _ => {}
+                            }
+                            continue;
+                        }
+
+                        if self.show_delete_modal {
+                            match key.code {
+                                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                                    self.show_delete_modal = false;
+                                    self.profile_to_delete = None;
+                                }
+                                KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                    if let Some(profile) = self.profile_to_delete.take() {
+                                        self.delete_profile(profile).await.ok();
+                                    }
+                                    self.show_delete_modal = false;
                                 }
                                 _ => {}
                             }
@@ -358,6 +529,8 @@ impl App {
                                         self.show_config_modal = false;
                                     } else if self.show_add_config_modal {
                                         self.show_add_config_modal = false;
+                                    } else if self.show_delete_modal {
+                                        self.show_delete_modal = false;
                                     }
                                 }
                                 KeyCode::Tab => {
@@ -403,6 +576,14 @@ impl App {
                                 KeyCode::Char('d') => {
                                     self.disconnect_active().await;
                                 }
+                                KeyCode::Delete | KeyCode::Char('x') => {
+                                    if let Some(idx) = self.list_state.selected() {
+                                        if let Some(profile) = self.profiles.get(idx) {
+                                            self.profile_to_delete = Some(profile.clone());
+                                            self.show_delete_modal = true;
+                                        }
+                                    }
+                                }
                                 KeyCode::Char('r') => {
                                     self.reconnect_selected().await;
                                 }
@@ -415,13 +596,31 @@ impl App {
                             }
                         }
                     }
-                } else if let Event::Paste(text) = event::read()? {
-                    if self.show_add_config_modal {
-                        match self.add_config_state.focused_field {
-                            0 => self.add_config_state.name.push_str(&text),
-                            2 => self.add_config_state.content.push_str(&text),
-                            _ => {}
+                } else if let Event::Mouse(mouse_event) = ev {
+                    match mouse_event.kind {
+                        event::MouseEventKind::ScrollDown => {
+                            if self.show_add_config_modal && self.add_config_state.focused_field == 2 {
+                                self.add_config_state.move_cursor(0, 1);
+                            } else if !self.show_add_config_modal && !self.show_config_modal && !self.show_help {
+                                if self.focused_panel == FocusedPanel::Profiles {
+                                    self.next_profile().await;
+                                }
+                            }
                         }
+                        event::MouseEventKind::ScrollUp => {
+                            if self.show_add_config_modal && self.add_config_state.focused_field == 2 {
+                                self.add_config_state.move_cursor(0, -1);
+                            } else if !self.show_add_config_modal && !self.show_config_modal && !self.show_help {
+                                if self.focused_panel == FocusedPanel::Profiles {
+                                    self.previous_profile().await;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                } else if let Event::Paste(text) = ev {
+                    if self.show_add_config_modal {
+                        self.add_config_state.paste(&text);
                     }
                 }
             }
@@ -431,6 +630,7 @@ impl App {
         }
 
         // --- Cleanup on exit ---
+        stdout().execute(crossterm::event::DisableMouseCapture).ok();
         stdout().execute(crossterm::event::DisableBracketedPaste).ok();
         self.status_message = Some("Disconnecting VPN before exit…".to_string());
         terminal.draw(|f| { crate::ui::layout::draw(f, self); }).ok();
@@ -602,7 +802,8 @@ impl App {
 
     pub async fn save_new_config(&mut self) -> anyhow::Result<()> {
         let name = self.add_config_state.name.trim();
-        let content = self.add_config_state.content.trim();
+        let content_str = self.add_config_state.get_content_string();
+        let content = content_str.trim();
         if name.is_empty() || content.is_empty() {
             self.status_message = Some("Name and content cannot be empty!".to_string());
             return Ok(());
@@ -662,6 +863,40 @@ impl App {
             }
         }
 
+        Ok(())
+    }
+
+    pub async fn delete_profile(&mut self, profile: VpnProfile) -> anyhow::Result<()> {
+        let password = match crate::engine::runner::SudoRunner::get_password() {
+            Some(p) => p,
+            None => {
+                self.status_message = Some("Sudo password required to delete config.".to_string());
+                self.sudo_prompt.is_active = true;
+                return Ok(());
+            }
+        };
+
+        // If the profile is active, disconnect it first
+        if self.active_profile.as_ref().map(|p| p.name.as_str()) == Some(profile.name.as_str()) {
+            self.disconnect_active().await;
+        }
+
+        let path_str = profile.path.clone();
+        
+        let rm_res = crate::engine::runner::SudoRunner::run_with_sudo(
+            &password, "rm", &["-f", &path_str]
+        ).await;
+
+        match rm_res {
+            Ok(_) => {
+                self.status_message = Some(format!("Deleted config {}", path_str));
+                self.refresh_profiles().await;
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Failed to delete config: {}", e));
+            }
+        }
+        
         Ok(())
     }
 
