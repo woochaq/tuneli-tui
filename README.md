@@ -2,7 +2,7 @@
 
 A lightning-fast, terminal-based VPN manager (TUI) for Linux and macOS. Manage your WireGuard and OpenVPN connections with a focus on speed, safety, and visual telemetry.
 
-![Screenshot Placeholder](https://via.placeholder.com/800x400?text=tuneli-tui+Dashboard)
+![tuneli-tui Dashboard](assets/dashboard.jpg)
 
 ## Features
 
@@ -66,37 +66,35 @@ The app automatically scans the following directories for profiles:
 - `openvpn` (`brew install openvpn`)
 - `pf` (built-in, used for Kill Switch)
 
-## Installation & Updates
+## Installation
 
-**Quick Install Script (Linux / macOS)**
-The easiest way to install the latest binary release is via the provided `install.sh` script:
-```bash
-curl -fsSL https://raw.githubusercontent.com/woochaq/tuneli-tui/main/install.sh | bash
-```
-*(Optionally, you can download `install.sh` and run it manually).*
-
-**Manual Binary Installation**
-When deploying from the binaries downloaded from the Releases tab on GitHub, simply mark it as executable:
-```bash
-chmod +x tuneli-tui
-sudo mv tuneli-tui /usr/local/bin/
-```
-
-**Auto-Updater (`U`)**
-`tuneli-tui` contains an embedded updater. Simply press `U` on your keyboard while the application is running, and the app will query the GitHub repository for a new release tag. If one exists, the binary will seamlessly download, unpack, and replace its executable directly.
-
-> **Note**: If installed to `/usr/local/bin`, you will need to open `tuneli-tui` via `sudo tuneli-tui` in order for it to overwrite itself during the update.
-
-**Building from Source**
 ```bash
 # Clone the repository
-git clone https://github.com/woochaq/tuneli-tui.git
+git clone https://github.com/youruser/tuneli-tui.git
 cd tuneli-tui
 
 # Build and run
-cargo install --path .
+cargo run --release
 ```
 
 ## Security Note
 
 `tuneli-tui` requires `sudo` permissions to manage network interfaces and firewall rules. It handles your password securely by piping it directly to system commands via `stdin` and scrubbing it from all log outputs.
+
+## Generating a Release
+
+To create and publish a new version of `tuneli-tui`:
+
+1. Update the `version` field in `Cargo.toml`.
+2. Commit your changes.
+3. Create a new tag matching the `v*` format (e.g., `v1.0.0`).
+4. Push the tag to GitHub.
+
+```bash
+git add Cargo.toml
+git commit -m "chore: bump version to v1.0.0"
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The embedded **GitHub Actions Workflow** will automatically intercept the tag, compile the optimized binaries for Linux (`x86_64`) and macOS (`aarch64`), compress them into `.tar.gz` payloads, and publish them directly to the GitHub Releases page. This allows the built-in auto-updater and `install.sh` scripts to instantly distribute the new version.
