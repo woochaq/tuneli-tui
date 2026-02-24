@@ -64,5 +64,14 @@ mv "$EXTRACTED_BIN" "$INSTALL_PATH"
 
 rm -rf "$TMP_DIR"
 echo "✅ Successfully installed $BIN_NAME to $INSTALL_PATH"
-echo "Make sure $INSTALL_DIR is in your PATH."
-echo "Run '$BIN_NAME' to get started!"
+
+if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+    echo ""
+    echo "⚠️  WARNING: $INSTALL_DIR is not in your PATH."
+    echo "To run '$BIN_NAME' from anywhere, add this to your ~/.bashrc or ~/.zshrc:"
+    echo "    export PATH=\"\$PATH:$INSTALL_DIR\""
+    echo "Then run: source ~/.bashrc (or reopen your terminal)"
+    echo ""
+else
+    echo "Run '$BIN_NAME' to get started!"
+fi
