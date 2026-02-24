@@ -68,7 +68,14 @@ The app automatically scans the following directories for profiles:
 
 ## Installation & Updates
 
-**Direct Binary (Linux / macOS)**
+**Quick Install Script (Linux / macOS)**
+The easiest way to install the latest binary release is via the provided `install.sh` script:
+```bash
+curl -fsSL https://raw.githubusercontent.com/woochaq/tuneli-tui/main/install.sh | bash
+```
+*(Optionally, you can download `install.sh` and run it manually).*
+
+**Manual Binary Installation**
 When deploying from the binaries downloaded from the Releases tab on GitHub, simply mark it as executable:
 ```bash
 chmod +x tuneli-tui
