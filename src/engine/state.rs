@@ -5,7 +5,7 @@ use tokio::fs;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AppState {
-    pub active_profile: Option<VpnProfile>,
+    pub active_profiles: Vec<VpnProfile>,
     pub pid: Option<u32>,
 }
 
@@ -23,7 +23,7 @@ impl StateManager {
 
     pub async fn load(&self) -> anyhow::Result<AppState> {
         if !self.path.exists() {
-            return Ok(AppState { active_profile: None, pid: None });
+            return Ok(AppState { active_profiles: vec![], pid: None });
         }
         let content = fs::read_to_string(&self.path).await?;
         let state = serde_json::from_str(&content)?;

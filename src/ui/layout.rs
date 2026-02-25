@@ -100,11 +100,11 @@ fn draw_main_body(f: &mut Frame, app: &mut App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
-    let active_name = app.active_profile.as_ref().map(|p| p.name.as_str());
+    let active_names: Vec<&str> = app.active_profiles.iter().map(|p| p.name.as_str()).collect();
 
     let sidebar_items: Vec<ListItem> = app.profiles.iter()
         .map(|p| {
-            let is_active = active_name == Some(p.name.as_str());
+            let is_active = active_names.contains(&p.name.as_str());
             let (prefix, color) = if is_active {
                 ("● ", Color::LightYellow)
             } else {
@@ -170,7 +170,19 @@ fn draw_main_body(f: &mut Frame, app: &mut App, area: Rect) {
         iter_lines.push(Line::from(vec![span]));
     }
 
-    let log_text = Paragraph::new(iter_lines).block(log_area);
+    let log_height = right_chunks[1].height.saturating_sub(2); // subtract borders
+    let total_lines = iter_lines.len() as u16;
+    let base_scroll = if total_lines > log_height {
+        total_lines - log_height
+    } else {
+        0
+    };
+    
+    let final_scroll = base_scroll.saturating_sub(app.log_scroll_offset);
+
+    let log_text = Paragraph::new(iter_lines)
+        .block(log_area)
+        .scroll((final_scroll, 0));
     f.render_widget(log_text, right_chunks[1]);
 }
 

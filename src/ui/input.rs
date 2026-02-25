@@ -93,21 +93,52 @@ pub async fn handle_event(app: &mut App, ev: Event) -> bool {
                 KeyCode::Esc => app.sudo_prompt.is_active = false,
                 KeyCode::Enter => {
                     if !app.sudo_prompt.input.is_empty() {
-                        let pwd = app.sudo_prompt.input.clone();
-                        app.sudo_prompt.is_verifying = true;
+                        let text = app.sudo_prompt.input.clone();
                         
-                        // Let `app.rs` handle the async validation in its loop to prevent terminal drawing issues here
-                        let is_valid = crate::engine::runner::SudoRunner::validate_password(&pwd).await;
-                        if is_valid {
-                            crate::engine::runner::SudoRunner::set_password(pwd);
+                        // Check what type of password this is by examining the prompt message
+                        let is_auth = app.sudo_prompt.error_msg.as_deref().unwrap_or("").contains("Auth [user:pass]");
+                        let is_private_key = app.sudo_prompt.error_msg.as_deref().unwrap_or("").contains("Private Key");
+                        
+                        if is_auth {
+                            if text.contains(':') && app.openvpn_cmd_tx.is_some() {
+                                let parts: Vec<&str> = text.splitn(2, ':').collect();
+                                if parts.len() == 2 {
+                                    let user_cmd = format!("username 'Auth' \"{}\"", parts[0]);
+                                    let pass_cmd = format!("password 'Auth' \"{}\"", parts[1]);
+                                    
+                                    if let Some(ref tx) = app.openvpn_cmd_tx {
+                                        let _ = tx.try_send(user_cmd);
+                                        let _ = tx.try_send(pass_cmd);
+                                        app.log_lines.push("[tuneli-tui] Sent Auth credentials to OpenVPN management.".to_string());
+                                    }
+                                }
+                            }
                             app.sudo_prompt.is_active = false;
                             app.sudo_prompt.error_msg = None;
-                            app.refresh_profiles().await;
-                        } else {
-                            app.sudo_prompt.error_msg = Some("Incorrect sudo password. Try again.".to_string());
                             app.sudo_prompt.input.clear();
+                        } else if is_private_key {
+                            if let Some(ref tx) = app.openvpn_cmd_tx {
+                                let _ = tx.try_send(format!("password 'Private Key' \"{}\"", text));
+                                app.log_lines.push("[tuneli-tui] Sent Private Key password to OpenVPN management.".to_string());
+                            }
+                            app.sudo_prompt.is_active = false;
+                            app.sudo_prompt.error_msg = None;
+                            app.sudo_prompt.input.clear();
+                        } else {
+                            // Standard Sudo Password Authentication
+                            app.sudo_prompt.is_verifying = true;
+                            let is_valid = crate::engine::runner::SudoRunner::validate_password(&text).await;
+                            if is_valid {
+                                crate::engine::runner::SudoRunner::set_password(text);
+                                app.sudo_prompt.is_active = false;
+                                app.sudo_prompt.error_msg = None;
+                                app.refresh_profiles().await;
+                            } else {
+                                app.sudo_prompt.error_msg = Some("Incorrect sudo password. Try again.".to_string());
+                                app.sudo_prompt.input.clear();
+                            }
+                            app.sudo_prompt.is_verifying = false;
                         }
-                        app.sudo_prompt.is_verifying = false;
                     } else {
                         app.sudo_prompt.is_active = false;
                     }
@@ -157,17 +188,49 @@ pub async fn handle_event(app: &mut App, ev: Event) -> bool {
                 app.show_add_config_modal = true;
                 app.add_config_state = crate::ui::add_config::AddConfigState::new();
             },
-            KeyCode::Down | KeyCode::Char('j') => app.next_profile().await,
-            KeyCode::Up | KeyCode::Char('k') => app.previous_profile().await,
-            KeyCode::Char('c') | KeyCode::Enter => {
-                if let Some(selected) = app.list_state.selected() {
-                    if let Some(profile) = app.profiles.get(selected).cloned() {
-                        app.connect_profile(profile).await;
+            KeyCode::Down | KeyCode::Char('j') => {
+                if app.focused_panel == FocusedPanel::Profiles {
+                    app.next_profile().await;
+                } else if app.focused_panel == FocusedPanel::Logs {
+                    app.log_scroll_offset = app.log_scroll_offset.saturating_sub(1);
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if app.focused_panel == FocusedPanel::Profiles {
+                    app.previous_profile().await;
+                } else if app.focused_panel == FocusedPanel::Logs {
+                    app.log_scroll_offset = app.log_scroll_offset.saturating_add(1);
+                    let max_scroll = app.log_lines.len().saturating_sub(1) as u16;
+                    if app.log_scroll_offset > max_scroll {
+                        app.log_scroll_offset = max_scroll;
                     }
                 }
             }
+            KeyCode::Right | KeyCode::Char('l') => app.focused_panel = FocusedPanel::Logs,
+            KeyCode::Left | KeyCode::Char('h') => app.focused_panel = FocusedPanel::Profiles,
+            KeyCode::PageUp => {
+                app.log_scroll_offset = app.log_scroll_offset.saturating_add(10);
+                let max_scroll = app.log_lines.len().saturating_sub(1) as u16;
+                if app.log_scroll_offset > max_scroll {
+                    app.log_scroll_offset = max_scroll;
+                }
+            }
+            KeyCode::PageDown => {
+                app.log_scroll_offset = app.log_scroll_offset.saturating_sub(10);
+            }
+            KeyCode::Char('c') | KeyCode::Enter => {
+                if app.focused_panel == FocusedPanel::Profiles {
+                    if let Some(selected) = app.list_state.selected() {
+                        if let Some(profile) = app.profiles.get(selected).cloned() {
+                            app.connect_profile(profile).await;
+                        }
+                    }
+                } else if app.focused_panel == FocusedPanel::Logs {
+                    app.log_scroll_offset = 0;
+                }
+            }
             KeyCode::Char('d') => {
-                app.disconnect_active().await;
+                app.disconnect_selected().await;
             }
             KeyCode::Delete | KeyCode::Char('x') => {
                 if let Some(idx) = app.list_state.selected() {
@@ -186,12 +249,17 @@ pub async fn handle_event(app: &mut App, ev: Event) -> bool {
         }
         request_redraw = true;
     } else if let Event::Mouse(mouse_event) = ev {
+        let terminal_width = crossterm::terminal::size().unwrap_or((80, 24)).0;
+        let is_over_logs = mouse_event.column > (terminal_width / 2);
+
         match mouse_event.kind {
             crossterm::event::MouseEventKind::ScrollDown => {
                 if app.show_add_config_modal && app.add_config_state.focused_field == 2 {
                     app.add_config_state.move_cursor(0, 1);
                 } else if !app.show_add_config_modal && !app.show_config_modal && !app.show_help {
-                    if app.focused_panel == FocusedPanel::Profiles {
+                    if is_over_logs {
+                        app.log_scroll_offset = app.log_scroll_offset.saturating_sub(3);
+                    } else {
                         app.next_profile().await;
                     }
                 }
@@ -200,7 +268,13 @@ pub async fn handle_event(app: &mut App, ev: Event) -> bool {
                 if app.show_add_config_modal && app.add_config_state.focused_field == 2 {
                     app.add_config_state.move_cursor(0, -1);
                 } else if !app.show_add_config_modal && !app.show_config_modal && !app.show_help {
-                    if app.focused_panel == FocusedPanel::Profiles {
+                    if is_over_logs {
+                        app.log_scroll_offset = app.log_scroll_offset.saturating_add(3);
+                        let max_scroll = app.log_lines.len().saturating_sub(1) as u16;
+                        if app.log_scroll_offset > max_scroll {
+                            app.log_scroll_offset = max_scroll;
+                        }
+                    } else {
                         app.previous_profile().await;
                     }
                 }

@@ -16,6 +16,8 @@ serde_json = "1.0.149"
 tokio = { version = "1.49.0", features = ["full"] }
 arboard = "3.4.1"
 self_update = { version = "0.42.0", features = ["archive-tar", "compression-flate2", "rustls"] }
+open = "5.1.2"
+url = "2.5.4"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 netlink-packet-route = "0.28.0"

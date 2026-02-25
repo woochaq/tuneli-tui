@@ -31,7 +31,7 @@ pub struct App {
     pub sudo_prompt: SudoPrompt,
     pub profiles: Vec<VpnProfile>,
     pub list_state: ListState,
-    pub active_profile: Option<VpnProfile>,
+    pub active_profiles: Vec<VpnProfile>,
     pub status_message: Option<String>,
     pub log_lines: Vec<String>,
     pub config_content: Option<String>,
@@ -59,6 +59,9 @@ pub struct App {
     pub last_ping_refresh: std::time::Instant,
     pub ping_fetch_handle: Option<tokio::task::JoinHandle<Option<std::time::Duration>>>,
     pub update_task: Option<tokio::task::JoinHandle<anyhow::Result<String>>>,
+    pub openvpn_events: Option<tokio::sync::mpsc::Receiver<crate::engine::openvpn::OpenVpnEvent>>,
+    pub openvpn_cmd_tx: Option<tokio::sync::mpsc::Sender<String>>,
+    pub log_scroll_offset: u16,
 }
 
 impl App {
@@ -71,7 +74,7 @@ impl App {
             sudo_prompt: SudoPrompt::new(),
             profiles: vec![],
             list_state: ListState::default(),
-            active_profile: None,
+            active_profiles: vec![],
             status_message: None,
             log_lines: vec!["[tuneli-tui] Ready.".to_string()],
             config_content: None,
@@ -95,6 +98,9 @@ impl App {
             last_ping_refresh: std::time::Instant::now() - std::time::Duration::from_secs(60),
             ping_fetch_handle: None,
             update_task: None,
+            openvpn_events: None,
+            openvpn_cmd_tx: None,
+            log_scroll_offset: 0,
         };
 
         if root {
@@ -115,23 +121,22 @@ impl App {
         if let Ok(profiles) = crate::engine::discovery::list_all_profiles().await {
             self.profiles = profiles;
 
-            // Reconcile active_profile with real system state (WireGuard only).
+            // Reconcile active_profiles with real system state (WireGuard only).
             // Never overwrite an active OpenVPN connection — openvpn runs as a daemon
             // and won't show up in `wg show interfaces`.
-            let active_is_ovpn = matches!(
-                self.active_profile.as_ref().map(|p| &p.protocol),
-                Some(crate::models::ProtocolConfig::OpenVpn { .. })
-            );
-            if !active_is_ovpn {
-                if let Some(pwd) = crate::engine::runner::SudoRunner::get_password() {
-                    let active_ifaces = crate::engine::runner::SudoRunner::get_active_wg_interfaces(&pwd).await;
-
-                    let newly_active = self.profiles.iter().find(|p| {
-                        active_ifaces.iter().any(|iface| iface == &p.name)
-                    }).cloned();
-
-                    if self.active_profile.as_ref().map(|p| &p.name) != newly_active.as_ref().map(|p| &p.name) {
-                        self.active_profile = newly_active;
+            if let Some(pwd) = crate::engine::runner::SudoRunner::get_password() {
+                let active_ifaces = crate::engine::runner::SudoRunner::get_active_wg_interfaces(&pwd).await;
+                
+                for profile in &self.profiles {
+                    if let ProtocolConfig::WireGuard { .. } = &profile.protocol {
+                        let is_wg_active = active_ifaces.iter().any(|iface| iface == &profile.name);
+                        let is_tracked = self.active_profiles.iter().any(|p| p.name == profile.name);
+                        
+                        if is_wg_active && !is_tracked {
+                            self.active_profiles.push(profile.clone());
+                        } else if !is_wg_active && is_tracked {
+                            self.active_profiles.retain(|p| p.name != profile.name);
+                        }
                     }
                 }
             }
@@ -282,6 +287,70 @@ impl App {
                 self.last_throughput_update = std::time::Instant::now();
             }
 
+            // Poll OpenVPN Events — drain into a Vec first to avoid holding a
+            // borrow on self.openvpn_events while we mutate other fields.
+            let openvpn_events: Vec<_> = if let Some(ref mut rx) = self.openvpn_events {
+                let mut events = Vec::new();
+                while let Ok(ev) = rx.try_recv() {
+                    events.push(ev);
+                }
+                events
+            } else {
+                Vec::new()
+            };
+            for ev in openvpn_events {
+                match ev {
+                        crate::engine::openvpn::OpenVpnEvent::Log(msg) => {
+                            self.log_lines.push(msg);
+                        }
+                        crate::engine::openvpn::OpenVpnEvent::NeedAuth => {
+                            self.status_message = Some("OpenVPN requires Auth".to_string());
+                            self.log_lines.push("[tuneli-tui] OpenVPN requested Username/Password prompt.".to_string());
+                            self.sudo_prompt.error_msg = Some("OpenVPN Auth [user:pass]".to_string());
+                            self.sudo_prompt.is_active = true;
+                            self.sudo_prompt.input.clear();
+                        }
+                        crate::engine::openvpn::OpenVpnEvent::NeedPrivateKeyAuth => {
+                            self.status_message = Some("OpenVPN requires Private Key Password".to_string());
+                            self.log_lines.push("[tuneli-tui] OpenVPN requested Private Key Password.".to_string());
+                            self.sudo_prompt.error_msg = Some("Private Key Password:".to_string());
+                            self.sudo_prompt.is_active = true;
+                            self.sudo_prompt.input.clear();
+                        }
+                        crate::engine::openvpn::OpenVpnEvent::AuthFailed(msg, name) => {
+                            self.status_message = Some("OpenVPN Auth Failed!".to_string());
+                            self.log_lines.push(format!("[ERROR] OpenVPN Auth failed: {}", msg));
+                            self.active_profiles.retain(|p| p.name != name);
+                        }
+                        crate::engine::openvpn::OpenVpnEvent::Connected(name) => {
+                            self.status_message = Some(format!("Connected to {} (OpenVPN)", name));
+                            self.log_lines.push("[tuneli-tui] OpenVPN Management reported CONNECTED.".to_string());
+                            self.last_geo_refresh = std::time::Instant::now() - std::time::Duration::from_secs(45);
+                            self.sudo_prompt.is_active = false;
+                            
+                            // If WireGuard is active, add ip rule to bypass WireGuard policy routing
+                            // for OpenVPN subnets (which are more specific routes in the main table).
+                            let has_wg = self.active_profiles.iter().any(|p| {
+                                matches!(&p.protocol, ProtocolConfig::WireGuard { .. })
+                            });
+                            if has_wg {
+                                if let Some(pwd) = crate::engine::runner::SudoRunner::get_password() {
+                                    self.log_lines.push("[tuneli-tui] WireGuard active — adjusting routing priority for OpenVPN subnets.".to_string());
+                                    let _ = crate::engine::runner::SudoRunner::run_with_sudo(
+                                        &pwd, "ip", &["rule", "add", "lookup", "main", "suppress_prefixlength", "0", "priority", "10"]
+                                    ).await;
+                                }
+                            }
+                        }
+                        crate::engine::openvpn::OpenVpnEvent::Disconnected => {
+                            self.log_lines.push("[tuneli-tui] OpenVPN Management Disconnected.".to_string());
+                            // We no longer indiscriminately drop active OpenVPN profiles here, because `openvpn` 
+                            // may close the management interface intentionally on some setups.
+                            // Profiles are instead dropped when the user initiates `disconnect_selected`.
+                        }
+                    }
+            }
+
             terminal.draw(|f| {
                 crate::ui::layout::draw(f, self);
             })?;
@@ -304,7 +373,7 @@ impl App {
         stdout().execute(crossterm::event::DisableBracketedPaste).ok();
         self.status_message = Some("Disconnecting VPN before exit…".to_string());
         terminal.draw(|f| { crate::ui::layout::draw(f, self); }).ok();
-        self.disconnect_active().await;
+        self.disconnect_all().await;
 
         disable_raw_mode()?;
         stdout().execute(LeaveAlternateScreen)?;
@@ -321,36 +390,9 @@ impl App {
             }
         };
 
-        // Handle disconnect if there's an active profile
-        if let Some(active) = self.active_profile.clone() {
-            let _ = crate::engine::firewall::Firewall::disable_killswitch(&password).await;
-            
-            if let ProtocolConfig::WireGuard { .. } = &active.protocol {
-                let cmd_str = format!("sudo wg-quick down {}", active.name);
-                self.log_lines.push(format!("[cmd] {}", cmd_str));
-                self.status_message = Some(format!("Disconnecting {}...", active.name));
-                let _ = crate::engine::runner::SudoRunner::run_with_sudo(
-                    &password,
-                    "wg-quick",
-                    &["down", &active.name]
-                ).await;
-            } else if let ProtocolConfig::OpenVpn { .. } = &active.protocol {
-                self.log_lines.push("[cmd] sudo killall -9 openvpn".to_string());
-                self.status_message = Some(format!("Disconnecting OpenVPN {}...", active.name));
-                let _ = crate::engine::runner::SudoRunner::run_with_sudo(
-                    &password, "killall", &["-9", "openvpn"]
-                ).await;
-            }
-
-            self.active_profile = None;
-            self.status_message = Some(format!("Disconnected {}", active.name));
-
-            // If we just clicked the currently active profile, toggle it off and return
-            if active.name == profile.name {
-                // Refresh IP
-                self.last_geo_refresh = std::time::Instant::now() - std::time::Duration::from_secs(60);
-                return;
-            }
+        if self.active_profiles.iter().any(|p| p.name == profile.name) {
+            self.status_message = Some(format!("{} is already connected.", profile.name));
+            return;
         }
 
         if let ProtocolConfig::WireGuard { .. } = &profile.protocol {
@@ -363,7 +405,7 @@ impl App {
                 &["up", &profile.name]
             ).await {
                 Ok(_) => {
-                    self.active_profile = Some(profile.clone());
+                    self.active_profiles.push(profile.clone());
                     self.status_message = Some(format!("Connected to {}. Enabling killswitch...", profile.name));
                     self.log_lines.push(format!("[tuneli-tui] Connected to {}", profile.name));
                     
@@ -380,7 +422,6 @@ impl App {
                 }
                 Err(e) => {
                     let err_msg = e.to_string();
-                    
                     if err_msg.to_lowercase().contains("incorrect password") || err_msg.to_lowercase().contains("try again") {
                         crate::engine::runner::SudoRunner::clear_password();
                         self.sudo_prompt.error_msg = Some("Incorrect sudo password. Please try again.".to_string());
@@ -393,18 +434,50 @@ impl App {
                 }
             }
         } else if let ProtocolConfig::OpenVpn { .. } = &profile.protocol {
-            let cmd_str = format!("sudo openvpn --daemon --config {}", profile.path);
-            self.log_lines.push(format!("[cmd] {}", cmd_str));
+            // Use Unix domain socket for management
+            let mgmt_sock = format!("/tmp/tuneli_mgmt_{}.sock", profile.name.replace(" ", "_"));
+            let _ = std::fs::remove_file(&mgmt_sock);
+                
             self.status_message = Some(format!("Connecting OpenVPN {}...", profile.name));
+            let pid_file = format!("/tmp/tuneli_{}.pid", profile.name.replace(" ", "_"));
+            // Assign a decreasing metric so newer connections override the default route.
+            let route_metric = 100_usize.saturating_sub(self.active_profiles.len() * 10).max(1);
+            let route_metric_str = route_metric.to_string();
+
+            // Always use management-query-passwords for interactive auth.
+            let args = vec![
+                "--daemon", 
+                "--config", &profile.path, 
+                "--management", &mgmt_sock, "unix", 
+                "--management-hold",
+                "--writepid", &pid_file,
+                "--route-metric", &route_metric_str,
+                "--redirect-gateway", "def1",
+                "--management-query-passwords",
+            ];
+            
+            self.log_lines.push(format!("[cmd] sudo openvpn {}", args.join(" ")));
+            
             match crate::engine::runner::SudoRunner::run_with_sudo(
                 &password,
                 "openvpn",
-                &["--daemon", "--config", &profile.path],
+                &args,
             ).await {
                 Ok(_) => {
-                    self.active_profile = Some(profile.clone());
-                    self.status_message = Some(format!("Connected to {} (OpenVPN)", profile.name));
-                    self.log_lines.push(format!("[tuneli-tui] OpenVPN connected: {}", profile.name));
+                    self.active_profiles.push(profile.clone());
+                    self.status_message = Some(format!("Connecting to {} (OpenVPN)", profile.name));
+                    self.log_lines.push(format!("[tuneli-tui] OpenVPN spawned, attaching to management interface: {}", profile.name));
+                    
+                    // Start parsing management logic
+                    match crate::engine::openvpn::start_management_client(mgmt_sock, profile.name.clone()).await {
+                        Ok((rx, tx)) => {
+                            self.openvpn_events = Some(rx);
+                            self.openvpn_cmd_tx = Some(tx);
+                        }
+                        Err(e) => {
+                            self.log_lines.push(format!("[ERROR] Management connection failed: {}", e));
+                        }
+                    }
 
                     // Trigger IP refresh shortly after connection
                     self.last_geo_refresh = std::time::Instant::now() - std::time::Duration::from_secs(45);
@@ -418,7 +491,7 @@ impl App {
         }
     }
 
-    pub async fn disconnect_active(&mut self) {
+    pub async fn disconnect_selected(&mut self) {
         let password = match crate::engine::runner::SudoRunner::get_password() {
             Some(p) => p,
             None => {
@@ -428,31 +501,63 @@ impl App {
             }
         };
 
-        if let Some(active) = self.active_profile.clone() {
-            let _ = crate::engine::firewall::Firewall::disable_killswitch(&password).await;
-            if let ProtocolConfig::WireGuard { .. } = &active.protocol {
-                let cmd_str = format!("sudo wg-quick down {}", active.name);
-                self.log_lines.push(format!("[cmd] {}", cmd_str));
-                self.status_message = Some(format!("Disconnecting {}...", active.name));
-                let _ = crate::engine::runner::SudoRunner::run_with_sudo(
-                    &password, "wg-quick", &["down", &active.name]
-                ).await;
-            } else if let ProtocolConfig::OpenVpn { .. } = &active.protocol {
-                self.log_lines.push("[cmd] sudo killall -9 openvpn".to_string());
-                self.status_message = Some(format!("Disconnecting OpenVPN {}...", active.name));
-                let _ = crate::engine::runner::SudoRunner::run_with_sudo(
-                    &password, "killall", &["-9", "openvpn"]
-                ).await;
-            }
-            self.active_profile = None;
-            self.status_message = Some(format!("Disconnected {}", active.name));
-            self.log_lines.push(format!("[tuneli-tui] Disconnected {}", active.name));
-            
-            // Refresh IP
-            self.last_geo_refresh = std::time::Instant::now() - std::time::Duration::from_secs(60);
-        } else {
-            self.status_message = Some("No active connection to disconnect.".to_string());
+        let profile = match self.list_state.selected().and_then(|i| self.profiles.get(i).cloned()) {
+            Some(p) => p,
+            None => return,
+        };
+        
+        if !self.active_profiles.iter().any(|p| p.name == profile.name) {
+            self.status_message = Some(format!("Profile {} is not connected.", profile.name));
+            return;
         }
+
+        let _ = crate::engine::firewall::Firewall::disable_killswitch(&password).await;
+
+        if let ProtocolConfig::WireGuard { .. } = &profile.protocol {
+            let cmd_str = format!("sudo wg-quick down {}", profile.name);
+            self.log_lines.push(format!("[cmd] {}", cmd_str));
+            self.status_message = Some(format!("Disconnecting {}...", profile.name));
+            let _ = crate::engine::runner::SudoRunner::run_with_sudo(
+                &password, "wg-quick", &["down", &profile.name]
+            ).await;
+        } else if let ProtocolConfig::OpenVpn { .. } = &profile.protocol {
+            let pid_file = format!("/tmp/tuneli_{}.pid", profile.name.replace(" ", "_"));
+            let mgmt_sock = format!("/tmp/tuneli_mgmt_{}.sock", profile.name.replace(" ", "_"));
+            self.log_lines.push(format!("[cmd] kill OpenVPN {}", profile.name));
+            self.status_message = Some(format!("Disconnecting OpenVPN {}...", profile.name));
+            let _ = crate::engine::runner::SudoRunner::run_with_sudo(
+                &password, "sh", &["-c", &format!("kill $(cat {}) 2>/dev/null; rm -f {} {}", pid_file, pid_file, mgmt_sock)]
+            ).await;
+            // Clean up the ip rule we added for WireGuard coexistence
+            let _ = crate::engine::runner::SudoRunner::run_with_sudo(
+                &password, "ip", &["rule", "del", "lookup", "main", "suppress_prefixlength", "0", "priority", "10"]
+            ).await;
+        }
+        
+        self.active_profiles.retain(|p| p.name != profile.name);
+        self.status_message = Some(format!("Disconnected {}", profile.name));
+        self.log_lines.push(format!("[tuneli-tui] Disconnected {}", profile.name));
+        
+        self.last_geo_refresh = std::time::Instant::now() - std::time::Duration::from_secs(60);
+    }
+    
+    pub async fn disconnect_all(&mut self) {
+        let password = match crate::engine::runner::SudoRunner::get_password() {
+            Some(p) => p,
+            None => return,
+        };
+
+        let active = self.active_profiles.clone();
+        for profile in active {
+            let _ = crate::engine::firewall::Firewall::disable_killswitch(&password).await;
+            if let ProtocolConfig::WireGuard { .. } = &profile.protocol {
+                let _ = crate::engine::runner::SudoRunner::run_with_sudo(&password, "wg-quick", &["down", &profile.name]).await;
+            } else if let ProtocolConfig::OpenVpn { .. } = &profile.protocol {
+                let pid_file = format!("/tmp/tuneli_{}.pid", profile.name.replace(" ", "_"));
+                let _ = crate::engine::runner::SudoRunner::run_with_sudo(&password, "sh", &["-c", &format!("kill $(cat {}) 2>/dev/null; rm -f {}", pid_file, pid_file)]).await;
+            }
+        }
+        self.active_profiles.clear();
     }
 
     pub async fn reconnect_selected(&mut self) {
@@ -466,7 +571,7 @@ impl App {
             }
         };
 
-        self.disconnect_active().await;
+        self.disconnect_selected().await;
         self.connect_profile(profile).await;
     }
 
@@ -547,8 +652,23 @@ impl App {
         };
 
         // If the profile is active, disconnect it first
-        if self.active_profile.as_ref().map(|p| p.name.as_str()) == Some(profile.name.as_str()) {
-            self.disconnect_active().await;
+        if self.active_profiles.iter().any(|p| p.name == profile.name) {
+            let _ = crate::engine::firewall::Firewall::disable_killswitch(&password).await;
+
+            if let ProtocolConfig::WireGuard { .. } = &profile.protocol {
+                let _ = crate::engine::runner::SudoRunner::run_with_sudo(
+                    &password, "wg-quick", &["down", &profile.name]
+                ).await;
+            } else if let ProtocolConfig::OpenVpn { .. } = &profile.protocol {
+                let filter = format!("openvpn.*{}", profile.path);
+                let _ = crate::engine::runner::SudoRunner::run_with_sudo(
+                    &password, "pkill", &["-f", &filter]
+                ).await;
+            }
+            
+            self.active_profiles.retain(|p| p.name != profile.name);
+            self.status_message = Some(format!("Disconnected {}", profile.name));
+            self.log_lines.push(format!("[tuneli-tui] Disconnected {}", profile.name));
         }
 
         let path_str = profile.path.clone();
