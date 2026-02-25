@@ -107,13 +107,9 @@ impl App {
             // Running as root — set a sentinel so SudoRunner passes an empty password
             crate::engine::runner::SudoRunner::set_password(String::new());
             app.log_lines.push("[tuneli-tui] Running as root — no sudo password needed.".to_string());
-            app.refresh_profiles().await;
-        } else if crate::engine::runner::SudoRunner::get_password().is_none() {
-            app.sudo_prompt.is_active = true;
-            app.sudo_prompt.error_msg = Some("Please enter sudo password to load profiles.".to_string());
-        } else {
-            app.refresh_profiles().await;
         }
+        
+        app.refresh_profiles().await;
         app
     }
 
@@ -209,7 +205,6 @@ impl App {
         stdout().execute(EnterAlternateScreen)?;
         stdout().execute(crossterm::event::EnableBracketedPaste)?;
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
-        stdout().execute(crossterm::event::EnableMouseCapture)?;
 
         while !self.should_quit {
             // Expire "Press Ctrl+C again to exit" after 3 seconds
@@ -369,7 +364,6 @@ impl App {
         }
 
         // --- Cleanup on exit ---
-        stdout().execute(crossterm::event::DisableMouseCapture).ok();
         stdout().execute(crossterm::event::DisableBracketedPaste).ok();
         self.status_message = Some("Disconnecting VPN before exit…".to_string());
         terminal.draw(|f| { crate::ui::layout::draw(f, self); }).ok();
@@ -396,13 +390,13 @@ impl App {
         }
 
         if let ProtocolConfig::WireGuard { .. } = &profile.protocol {
-            let cmd_str = format!("sudo wg-quick up {}", profile.name);
+            let cmd_str = format!("sudo wg-quick up {}", profile.path);
             self.log_lines.push(format!("[cmd] {}", cmd_str));
             self.status_message = Some(format!("Connecting {}...", profile.name));
             match crate::engine::runner::SudoRunner::run_with_sudo(
                 &password, 
                 "wg-quick", 
-                &["up", &profile.name]
+                &["up", &profile.path]
             ).await {
                 Ok(_) => {
                     self.active_profiles.push(profile.clone());
@@ -514,11 +508,11 @@ impl App {
         let _ = crate::engine::firewall::Firewall::disable_killswitch(&password).await;
 
         if let ProtocolConfig::WireGuard { .. } = &profile.protocol {
-            let cmd_str = format!("sudo wg-quick down {}", profile.name);
+            let cmd_str = format!("sudo wg-quick down {}", profile.path);
             self.log_lines.push(format!("[cmd] {}", cmd_str));
             self.status_message = Some(format!("Disconnecting {}...", profile.name));
             let _ = crate::engine::runner::SudoRunner::run_with_sudo(
-                &password, "wg-quick", &["down", &profile.name]
+                &password, "wg-quick", &["down", &profile.path]
             ).await;
         } else if let ProtocolConfig::OpenVpn { .. } = &profile.protocol {
             let pid_file = format!("/tmp/tuneli_{}.pid", profile.name.replace(" ", "_"));
@@ -551,7 +545,7 @@ impl App {
         for profile in active {
             let _ = crate::engine::firewall::Firewall::disable_killswitch(&password).await;
             if let ProtocolConfig::WireGuard { .. } = &profile.protocol {
-                let _ = crate::engine::runner::SudoRunner::run_with_sudo(&password, "wg-quick", &["down", &profile.name]).await;
+                let _ = crate::engine::runner::SudoRunner::run_with_sudo(&password, "wg-quick", &["down", &profile.path]).await;
             } else if let ProtocolConfig::OpenVpn { .. } = &profile.protocol {
                 let pid_file = format!("/tmp/tuneli_{}.pid", profile.name.replace(" ", "_"));
                 let _ = crate::engine::runner::SudoRunner::run_with_sudo(&password, "sh", &["-c", &format!("kill $(cat {}) 2>/dev/null; rm -f {}", pid_file, pid_file)]).await;
@@ -591,19 +585,13 @@ impl App {
 
         let filename = format!("{}.{}", name, extension);
         
-        let base_path = if cfg!(target_os = "macos") {
-            match self.add_config_state.protocol {
-                ProtocolType::WireGuard => "/opt/homebrew/etc/wireguard",
-                ProtocolType::OpenVpn => "/opt/homebrew/etc/openvpn",
-            }
-        } else {
-            match self.add_config_state.protocol {
-                ProtocolType::WireGuard => "/etc/wireguard",
-                ProtocolType::OpenVpn => "/etc/openvpn",
-            }
-        };
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+        let base_path = format!("{}/.config/tuneli-tui/profiles", home);
 
-        let full_path = std::path::Path::new(base_path).join(filename);
+        // Ensure directory exists
+        let _ = std::fs::create_dir_all(&base_path);
+
+        let full_path = std::path::Path::new(&base_path).join(filename);
         let path_str = full_path.to_string_lossy().to_string();
 
         let password = match crate::engine::runner::SudoRunner::get_password() {
@@ -657,7 +645,7 @@ impl App {
 
             if let ProtocolConfig::WireGuard { .. } = &profile.protocol {
                 let _ = crate::engine::runner::SudoRunner::run_with_sudo(
-                    &password, "wg-quick", &["down", &profile.name]
+                    &password, "wg-quick", &["down", &profile.path]
                 ).await;
             } else if let ProtocolConfig::OpenVpn { .. } = &profile.protocol {
                 let filter = format!("openvpn.*{}", profile.path);

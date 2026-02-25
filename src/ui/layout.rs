@@ -159,7 +159,7 @@ fn draw_main_body(f: &mut Frame, app: &mut App, area: Rect) {
         let span = if msg.starts_with("[ERROR]") {
             Span::styled(msg, Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
         } else if msg.starts_with("[cmd]") {
-            Span::styled(msg, Style::default().fg(Color::DarkGray))
+            Span::styled(msg, Style::default().fg(Color::LightMagenta).add_modifier(Modifier::BOLD))
         } else if msg.starts_with("[geo]") || msg.starts_with("[ping]") {
             Span::styled(msg, Style::default().fg(Color::Blue))
         } else if msg.starts_with("[tuneli-tui]") {
@@ -182,6 +182,7 @@ fn draw_main_body(f: &mut Frame, app: &mut App, area: Rect) {
 
     let log_text = Paragraph::new(iter_lines)
         .block(log_area)
+        .wrap(ratatui::widgets::Wrap { trim: true })
         .scroll((final_scroll, 0));
     f.render_widget(log_text, right_chunks[1]);
 }

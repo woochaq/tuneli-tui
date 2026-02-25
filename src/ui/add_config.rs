@@ -78,10 +78,9 @@ impl AddConfigState {
     }
 
     pub fn paste(&mut self, text: &str) {
-        for c in text.chars() {
-            if c != '\r' {
-                self.insert_char(c);
-            }
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        for c in normalized.chars() {
+            self.insert_char(c);
         }
     }
 

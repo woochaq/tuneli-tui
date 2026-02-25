@@ -55,11 +55,11 @@ fi
 
 chmod +x "$EXTRACTED_BIN"
 
-INSTALL_DIR="$HOME/.local/bin"
+INSTALL_DIR="$HOME/.config/tuneli-tui"
 INSTALL_PATH="$INSTALL_DIR/$BIN_NAME"
 
 echo "Installing to $INSTALL_PATH..."
-mkdir -p "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR/profiles"
 mv "$EXTRACTED_BIN" "$INSTALL_PATH"
 
 rm -rf "$TMP_DIR"
