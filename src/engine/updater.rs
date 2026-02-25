@@ -7,6 +7,7 @@ pub fn update_binary() -> Result<String> {
         .repo_name("tuneli-tui")
         .bin_name("tuneli-tui")
         .show_download_progress(false)
+        .show_output(false)
         .current_version(env!("CARGO_PKG_VERSION"))
         .build()?
         .update()?;
